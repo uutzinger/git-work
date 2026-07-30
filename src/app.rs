@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+use crate::fl;
+
 use crate::config::Config;
 use crate::github::*;
-use cosmic::cosmic_config::{self, CosmicConfigEntry};
+use cosmic::cosmic_config::{self, Config as CosmicConfigHandler, CosmicConfigEntry};
 use cosmic::iced::{window::Id, Alignment, Length, Limits, Subscription, Task};
 use cosmic::iced_winit::commands::popup::{destroy_popup, get_popup};
 use cosmic::prelude::*;
@@ -20,6 +22,8 @@ pub struct AppModel {
     core: cosmic::Core,
     /// The popup id.
     popup: Option<Id>,
+    /// Handle for persisting config changes.
+    config_handler: Option<CosmicConfigHandler>,
     /// Configuration data that persists between application runs.
     config: Config,
     /// GitHub service for API interactions
@@ -30,12 +34,12 @@ pub struct AppModel {
     is_loading: bool,
     /// Error state
     error_message: Option<String>,
-    /// Filter state
-    show_all: bool,
     /// Last refresh time
     last_refresh: Option<std::time::Instant>,
     /// Unread count for the icon
     unread_count: usize,
+    /// Token input field value for the setup UI
+    token_input: String,
 }
 
 /// Messages emitted by the application and its widgets.
@@ -51,6 +55,11 @@ pub enum Message {
     NotificationMarkedAsRead(Result<Option<NotificationId>, String>),
     ToggleShowAll(bool),
     UpdateConfig(Config),
+    TokenLoaded(Result<String, String>),
+    TokenInputChanged(String),
+    SaveToken,
+    TokenSaved(Result<(), String>),
+    Tick,
 }
 
 /// Create a COSMIC application from the app model
@@ -80,42 +89,36 @@ impl cosmic::Application for AppModel {
         core: cosmic::Core,
         _flags: Self::Flags,
     ) -> (Self, Task<cosmic::Action<Self::Message>>) {
-        let client = || -> Result<Octocrab, Box<dyn std::error::Error>> {
-            let token = std::env::var("GITHUB_TOKEN")
-                .map_err(|_|
-                    "GITHUB_TOKEN environment variable not found. Please set your GitHub personal access token."
-                )?;
+        let config_handler = cosmic_config::Config::new(Self::APP_ID, Config::VERSION).ok();
+        let config = config_handler
+            .as_ref()
+            .map(|ctx| match Config::get_entry(ctx) {
+                Ok(config) => config,
+                Err((_errors, config)) => config,
+            })
+            .unwrap_or_default();
 
-            let client = octocrab::OctocrabBuilder::new()
-                .personal_token(token)
-                .build()?;
-            Ok(client)
-        };
-
-        // Construct the app model with the runtime's core.
-        let mut app = AppModel {
+        let app = AppModel {
             core,
-            client: client().ok(),
-            config: cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
-                .map(|context| match Config::get_entry(&context) {
-                    Ok(config) => config,
-                    Err((_errors, config)) => config,
-                })
-                .unwrap_or_default(),
+            is_loading: true,
+            config_handler,
+            config,
             ..Default::default()
         };
 
-        let task = if app.client.is_some() {
-            app.is_loading = true;
-            Task::perform(async {}, |_| {
-                cosmic::Action::App(Message::RefreshNotifications)
-            })
-        } else {
-            app.error_message = Some(
-                "GitHub token not found. Please set GITHUB_TOKEN environment variable.".to_string(),
-            );
-            Task::none()
-        };
+        // Load token from the system keyring asynchronously
+        let task = Task::perform(
+            async move {
+                tokio::task::spawn_blocking(|| {
+                    keyring::Entry::new("git-work", "github-token")
+                        .and_then(|e| e.get_password())
+                        .map_err(|e| e.to_string())
+                })
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()))
+            },
+            |result| cosmic::Action::App(Message::TokenLoaded(result)),
+        );
 
         (app, task)
     }
@@ -144,11 +147,11 @@ impl cosmic::Application for AppModel {
 
     fn view_window(&self, _id: Id) -> Element<'_, Self::Message> {
         let header = widget::row()
-            .push(widget::text("GitHub Notifications").size(spacing().space_s))
+            .push(widget::text(fl!("app-title")).size(spacing().space_s))
             .push(widget::horizontal_space().width(Length::Fill))
             .push(
                 widget::button::icon(widget::icon::from_name("checkbox-checked-symbolic"))
-                    .tooltip("Mark all read")
+                    .tooltip(fl!("mark-all-read"))
                     .padding([spacing().space_xxxs, spacing().space_xxs])
                     .on_press_maybe(
                         (!self.notifications.is_empty()).then_some(Message::MarkAllAsRead),
@@ -162,33 +165,34 @@ impl cosmic::Application for AppModel {
             .spacing(spacing().space_xxs)
             .align_y(Alignment::Center);
 
-        let content = if let Some(error) = &self.error_message {
+        let content = if self.client.is_none() && !self.is_loading {
+            widget::column()
+                .push(widget::text(fl!("token-setup-title")).size(spacing().space_s))
+                .push(widget::text(fl!("token-setup-instructions")).size(spacing().space_xs))
+                .push(
+                    widget::text_input("ghp_...", &self.token_input)
+                        .on_input(Message::TokenInputChanged),
+                )
+                .push_maybe(
+                    self.error_message
+                        .as_ref()
+                        .map(|e| widget::text(e.as_str()).size(spacing().space_xs)),
+                )
+                .push(
+                    widget::button::standard(fl!("token-save")).on_press_maybe(
+                        (!self.token_input.is_empty()).then_some(Message::SaveToken),
+                    ),
+                )
+                .spacing(spacing().space_xs)
+                .padding(spacing().space_s)
+        } else if let Some(error) = &self.error_message {
             widget::column()
                 .push(header)
                 .push(
                     widget::container(
                         widget::column()
-                            .push(widget::text("Error").size(spacing().space_s))
+                            .push(widget::text(fl!("error")).size(spacing().space_s))
                             .push(widget::text(error).size(spacing().space_xs))
-                            .push(if error.contains("GITHUB_TOKEN") {
-                                widget::column()
-                                    .push(widget::text("To fix this:").size(spacing().space_xs))
-                                    .push(
-                                        widget::text("1. Create a Personal Access Token on GitHub")
-                                            .size(spacing().space_xs),
-                                    )
-                                    .push(
-                                        widget::text("2. Set GITHUB_TOKEN environment variable")
-                                            .size(spacing().space_xs),
-                                    )
-                                    .push(
-                                        widget::text("3. Restart the applet")
-                                            .size(spacing().space_xs),
-                                    )
-                                    .spacing(spacing().space_xxxs)
-                            } else {
-                                widget::column()
-                            })
                             .width(Length::Fill)
                             .spacing(spacing().space_xxs),
                     )
@@ -202,7 +206,7 @@ impl cosmic::Application for AppModel {
                 .push(
                     widget::container(
                         widget::row()
-                            .push(widget::text("Loading notifications...").size(spacing().space_xs))
+                            .push(widget::text(fl!("loading")).size(spacing().space_xs))
                             .push(widget::horizontal_space().width(Length::Fill))
                             .align_y(Alignment::Center),
                     )
@@ -216,8 +220,11 @@ impl cosmic::Application for AppModel {
                 .push(
                     widget::container(
                         widget::column()
-                            .push(widget::text("🎉 All caught up!").size(spacing().space_s))
-                            .push(widget::text("No new notifications").size(spacing().space_xs))
+                            .push(widget::icon::from_name("emblem-ok-symbolic").size(32))
+                            .push(widget::text(fl!("no-notifications")).size(spacing().space_s))
+                            .push(
+                                widget::text(fl!("no-notifications-desc")).size(spacing().space_xs),
+                            )
                             .spacing(spacing().space_xxs)
                             .align_x(Alignment::Center)
                             .width(Length::Fill),
@@ -229,13 +236,13 @@ impl cosmic::Application for AppModel {
         } else {
             let controls = widget::row()
                 .push(
-                    widget::text(format!("{} notifications", self.notifications.len()))
+                    widget::text(fl!("notifications-count", count = self.notifications.len()))
                         .size(spacing().space_xs),
                 )
                 .push(widget::horizontal_space().width(Length::Fill))
                 .push(
-                    widget::toggler(self.show_all)
-                        .label("Show all")
+                    widget::toggler(self.config.show_all)
+                        .label(fl!("show-all"))
                         .spacing(spacing().space_xxs)
                         .on_toggle(Message::ToggleShowAll),
                 )
@@ -253,7 +260,7 @@ impl cosmic::Application for AppModel {
                 widget::container(notifications_list)
                     .padding([spacing().space_none, spacing().space_xxxs]),
             )
-            .height(Length::Fixed(400.0));
+            .height(Length::Fill);
 
             widget::column()
                 .push(header)
@@ -279,10 +286,13 @@ impl cosmic::Application for AppModel {
     /// beginning of the application, and persist through its lifetime.
     fn subscription(&self) -> Subscription<Self::Message> {
         Subscription::batch(vec![
-            // Watch for application configuration changes.
             self.core()
                 .watch_config::<Config>(Self::APP_ID)
                 .map(|update| Message::UpdateConfig(update.config)),
+            cosmic::iced::time::every(std::time::Duration::from_secs(
+                self.config.refresh_interval_secs,
+            ))
+            .map(|_| Message::Tick),
         ])
     }
 
@@ -307,11 +317,8 @@ impl cosmic::Application for AppModel {
                         None,
                         None,
                     );
-                    popup_settings.positioner.size_limits = Limits::NONE
-                        .max_width(1000.0)
-                        .min_width(1000.0)
-                        .min_height(1000.0)
-                        .max_height(1000.0);
+                    popup_settings.positioner.size_limits =
+                        Limits::NONE.max_width(500.0).max_height(620.0);
                     get_popup(popup_settings)
                 }
             }
@@ -324,7 +331,7 @@ impl cosmic::Application for AppModel {
                 if let Some(client) = &self.client {
                     self.is_loading = true;
                     self.error_message = None;
-                    let all = self.show_all;
+                    let all = self.config.show_all;
                     let client = client.clone();
                     return Task::perform(
                         async move {
@@ -426,12 +433,79 @@ impl cosmic::Application for AppModel {
                         .map(|n| n.unread = !n.unread);
                 }
                 Err(error) => {
-                    self.error_message = Some(format!("Failed to mark as read: {}", error));
+                    self.error_message = Some(format!("{}: {}", fl!("error-mark-read"), error));
                 }
             },
             Message::ToggleShowAll(show_all) => {
-                self.show_all = show_all;
+                self.config.show_all = show_all;
+                if let Some(handler) = &self.config_handler {
+                    let _ = self.config.write_entry(handler);
+                }
                 tasks.push(cosmic::task::message(Message::RefreshNotifications));
+            }
+            Message::TokenLoaded(result) => match result {
+                Ok(token) => match octocrab::OctocrabBuilder::new()
+                    .personal_token(token)
+                    .build()
+                {
+                    Ok(client) => {
+                        self.client = Some(client);
+                        tasks.push(cosmic::task::message(Message::RefreshNotifications));
+                    }
+                    Err(e) => {
+                        self.is_loading = false;
+                        self.error_message = Some(e.to_string());
+                    }
+                },
+                Err(_) => {
+                    // No token in keyring — show the setup UI
+                    self.is_loading = false;
+                }
+            },
+            Message::TokenInputChanged(value) => {
+                self.token_input = value;
+            }
+            Message::SaveToken => {
+                let token = self.token_input.clone();
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            keyring::Entry::new("git-work", "github-token")
+                                .and_then(|e| e.set_password(&token))
+                                .map_err(|e| e.to_string())
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(e.to_string()))
+                    },
+                    |result| cosmic::Action::App(Message::TokenSaved(result)),
+                );
+            }
+            Message::TokenSaved(result) => match result {
+                Ok(()) => {
+                    let token = self.token_input.clone();
+                    match octocrab::OctocrabBuilder::new()
+                        .personal_token(token)
+                        .build()
+                    {
+                        Ok(client) => {
+                            self.client = Some(client);
+                            self.error_message = None;
+                            self.is_loading = true;
+                            tasks.push(cosmic::task::message(Message::RefreshNotifications));
+                        }
+                        Err(e) => {
+                            self.error_message = Some(e.to_string());
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Failed to save token: {}", e));
+                }
+            },
+            Message::Tick => {
+                if self.client.is_some() && !self.is_loading {
+                    tasks.push(cosmic::task::message(Message::RefreshNotifications));
+                }
             }
         }
         Task::batch(tasks)
@@ -501,12 +575,12 @@ fn format_time_ago(datetime: &chrono::DateTime<chrono::Utc>) -> String {
     let duration = now.signed_duration_since(*datetime);
 
     if duration.num_days() > 0 {
-        format!("{} days ago", duration.num_days())
+        fl!("time-days-ago", days = duration.num_days())
     } else if duration.num_hours() > 0 {
-        format!("{} hours ago", duration.num_hours())
+        fl!("time-hours-ago", hours = duration.num_hours())
     } else if duration.num_minutes() > 0 {
-        format!("{} minutes ago", duration.num_minutes())
+        fl!("time-minutes-ago", minutes = duration.num_minutes())
     } else {
-        "Just now".to_string()
+        fl!("time-just-now")
     }
 }

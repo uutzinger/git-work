@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+use crate::fl;
+
 use octocrab::models::activity::Notification;
 
 pub fn get_notification_url(notification: &Notification) -> Option<String> {
@@ -29,18 +31,18 @@ pub fn get_notification_url(notification: &Notification) -> Option<String> {
 
 pub fn format_reason(reason: &str) -> String {
     match reason {
-        "assign" => "You were assigned".to_string(),
-        "author" => "You authored this".to_string(),
-        "comment" => "You commented".to_string(),
-        "invitation" => "You were invited".to_string(),
-        "manual" => "You subscribed".to_string(),
-        "mention" => "You were mentioned".to_string(),
-        "review_requested" => "Review requested".to_string(),
-        "security_alert" => "Security alert".to_string(),
-        "state_change" => "State changed".to_string(),
-        "subscribed" => "You're subscribed".to_string(),
-        "team_mention" => "Team mentioned".to_string(),
-        "ci_activity" => "Workflow activity".to_string(),
+        "assign" => fl!("reason-assign"),
+        "author" => fl!("reason-author"),
+        "comment" => fl!("reason-comment"),
+        "invitation" => fl!("reason-invitation"),
+        "manual" => fl!("reason-manual"),
+        "mention" => fl!("reason-mention"),
+        "review_requested" => fl!("reason-review-requested"),
+        "security_alert" => fl!("reason-security-alert"),
+        "state_change" => fl!("reason-state-change"),
+        "subscribed" => fl!("reason-subscribed"),
+        "team_mention" => fl!("reason-team-mention"),
+        "ci_activity" => fl!("reason-ci-activity"),
         _ => reason.to_string(),
     }
 }

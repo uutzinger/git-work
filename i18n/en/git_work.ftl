@@ -3,7 +3,7 @@ about = About
 notifications = Notifications
 loading = Loading notifications...
 error = Error
-no-notifications = 🎉 All caught up!
+no-notifications = All caught up!
 no-notifications-desc = No new notifications
 show-all = Show all
 mark-all-read = Mark all read
@@ -36,6 +36,12 @@ reason-security-alert = Security alert
 reason-state-change = State changed
 reason-subscribed = You're subscribed
 reason-team-mention = Team mentioned
+reason-ci-activity = Workflow activity
+
+# Token setup
+token-setup-title = GitHub Token Setup
+token-setup-instructions = Enter a Personal Access Token with notifications scope:
+token-save = Save Token
 
 # Time formatting
 time-just-now = Just now

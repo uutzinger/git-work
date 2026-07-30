@@ -17,7 +17,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.41.0", features = ["full"] }
 chrono = { version = "0.4", features = ["serde"] }
-dotenv = "0.15.0"
+keyring = "3"
 octocrab = "0.46.0"
 
 [dependencies.i18n-embed]
@@ -36,8 +36,6 @@ features = [
     "dbus-config",
     # Support creating additional application windows.
     "multi-window",
-    # On app startup, focuses an existing instance if the app is already open
-    "single-instance",
     # Uses tokio as the executor for the runtime
     "tokio",
     # Windowing support for X11, Windows, Mac, & Redox
