@@ -55,7 +55,7 @@ pub enum Message {
     NotificationMarkedAsRead(Result<Option<NotificationId>, String>),
     ToggleShowAll(bool),
     UpdateConfig(Config),
-    TokenLoaded(Result<String, String>),
+    TokenLoaded(Result<Option<String>, String>),
     TokenInputChanged(String),
     SaveToken,
     TokenSaved(Result<(), String>),
@@ -110,9 +110,13 @@ impl cosmic::Application for AppModel {
         let task = Task::perform(
             async move {
                 tokio::task::spawn_blocking(|| {
-                    keyring::Entry::new("git-work", "github-token")
+                    match keyring::Entry::new("git-work", "github-token")
                         .and_then(|e| e.get_password())
-                        .map_err(|e| e.to_string())
+                    {
+                        Ok(token) => Ok(Some(token)),
+                        Err(keyring::Error::NoEntry) => Ok(None),
+                        Err(e) => Err(e.to_string()),
+                    }
                 })
                 .await
                 .unwrap_or_else(|e| Err(e.to_string()))
@@ -444,7 +448,7 @@ impl cosmic::Application for AppModel {
                 tasks.push(cosmic::task::message(Message::RefreshNotifications));
             }
             Message::TokenLoaded(result) => match result {
-                Ok(token) => match octocrab::OctocrabBuilder::new()
+                Ok(Some(token)) => match octocrab::OctocrabBuilder::new()
                     .personal_token(token)
                     .build()
                 {
@@ -457,9 +461,13 @@ impl cosmic::Application for AppModel {
                         self.error_message = Some(e.to_string());
                     }
                 },
-                Err(_) => {
-                    // No token in keyring — show the setup UI
+                Ok(None) => {
+                    // No token in keyring; show the setup UI.
                     self.is_loading = false;
+                }
+                Err(e) => {
+                    self.is_loading = false;
+                    self.error_message = Some(format!("Failed to load token: {}", e));
                 }
             },
             Message::TokenInputChanged(value) => {
