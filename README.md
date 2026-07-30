@@ -2,6 +2,10 @@
 
 A beautiful GitHub notifications applet for COSMIC Desktop that helps you stay on top of your GitHub activity. View, manage, and open notifications directly from your system panel.
 
+## Usage
+
+On first run, enter a GitHub Personal Access Token with the `notifications` scope. Git Work stores the token in the system keyring and refreshes notifications periodically.
+
 ## Installation
 
 A [justfile](./justfile) is included by default for the [casey/just][just] command runner.
