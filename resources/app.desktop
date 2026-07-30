@@ -9,3 +9,4 @@ StartupNotify=true
 Categories=COSMIC
 Keywords=COSMIC
 MimeType=
+X-CosmicApplet=true
